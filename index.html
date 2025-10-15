@@ -63,35 +63,44 @@
 
 <script>
 /*** CONFIG ***/
-const COVALENT_KEY = "cqt_rQmpdjRkVtvctfYTqQ63mBKq3GWr"; // varsa kullanır, yoksa RPC fallback çalışır
-const RPC = {
-  1:    'https://cloudflare-eth.com',    // Ethereum (public)
-  8453: 'https://mainnet.base.org'       // Base (public)
+const COVALENT_KEY = "cqt_rQmpdjRkVtvctfYTqQ63mBKq3GWr"; // varsa kullan, yoksa sadece RPC
+// CORS dostu birden fazla RPC; sırayla dener
+const RPCS = {
+  1: [
+    'https://rpc.ankr.com/eth',
+    'https://cloudflare-eth.com',
+    'https://1rpc.io/eth'
+  ],
+  8453: [
+    'https://base.blockpi.network/v1/rpc/public',
+    'https://1rpc.io/base',
+    'https://base.drpc.org' // yedek
+  ]
 };
 
 /*** TARGETS ***/
 const TARGETS = [
-  // Node Runner — Ethereum
+  // Node Runner — Ethereum (ERC-1155)
   { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"0" },
   { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"1" },
   { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"2" },
   { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"3" },
   { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"4" },
 
-  // Alpha — Base
+  // Alpha — Base (ERC-1155)
   { group:"alpha", chainId:8453, contract:"0x307d51ad986d249f0b69a78c92ae2a6c140c19a4", tokenId:"0" },
   { group:"alpha", chainId:8453, contract:"0x307d51ad986d249f0b69a78c92ae2a6c140c19a4", tokenId:"1" },
   { group:"alpha", chainId:8453, contract:"0x307d51ad986d249f0b69a78c92ae2a6c140c19a4", tokenId:"2" },
   { group:"alpha", chainId:8453, contract:"0x307d51ad986d249f0b69a78c92ae2a6c140c19a4", tokenId:"3" },
-  { group:"alpha", chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"4" },
+  { group:"alpha", chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"4" }, /* geçiş */
 
-  // Beta — Base
+  // Beta — Base (ERC-1155)
   { group:"beta",  chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"0" },
   { group:"beta",  chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"1" },
   { group:"beta",  chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"2" },
   { group:"beta",  chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"3" },
 
-  // Gamma — Base
+  // Gamma — Base (ERC-1155)
   { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"0" },
   { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"1" },
   { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"2" },
@@ -100,23 +109,22 @@ const TARGETS = [
 ];
 
 /*** HELPERS ***/
-function toHttpFromIpfs(url){
+const toHttpFromIpfs = (url)=>{
   if(!url) return "";
   if(url.startsWith("ipfs://")) return `https://ipfs.io/ipfs/${url.slice(7)}`;
   if(/^\/?ipfs\//i.test(url))   return "https://ipfs.io/" + url.replace(/^\/?/,"");
   return url;
-}
-function tidyId(x){
+};
+const tidyId = (x)=>{
   const n = Number(String(x).replace(/^0+/, "")); // "0003"->3
   return Number.isFinite(n) ? String(n) : String(x);
-}
+};
+const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
 
-/*** SIMPLE CONCURRENCY (avoid bursts) ***/
+/*** SIMPLE CONCURRENCY ***/
 const MAX_CONCURRENCY = 4;
 let active = 0, queue = [];
-function schedule(fn){ return new Promise((res,rej)=>{
-  queue.push({fn,res,rej}); runQueue();
-});}
+function schedule(fn){ return new Promise((res,rej)=>{ queue.push({fn,res,rej}); runQueue(); });}
 function runQueue(){
   while(active<MAX_CONCURRENCY && queue.length){
     const {fn,res,rej} = queue.shift(); active++;
@@ -124,12 +132,11 @@ function runQueue(){
   }
 }
 
-/*** COVALENT (best effort) ***/
+/*** COVALENT (optional) ***/
 async function covalentFetch(url){
-  // dener: Authorization → olmazsa X-API-Key
-  let r = await fetch(url, { headers: { Authorization: `Bearer ${COVALENT_KEY}` }, cache: 'no-store' });
+  let r = await fetch(url, { headers: { Authorization: `Bearer ${COVALENT_KEY}` }, cache:'no-store' });
   if(r.status===401 || r.status===403){
-    r = await fetch(url, { headers: { 'X-API-Key': COVALENT_KEY }, cache: 'no-store' });
+    r = await fetch(url, { headers: { 'X-API-Key': COVALENT_KEY }, cache:'no-store' });
   }
   if(!r.ok) throw new Error(`Covalent ${r.status}`);
   return r.json();
@@ -143,8 +150,7 @@ function buildOwnedTokenMap(data){
   const items = (data?.data?.items || []).filter(x => x.type === "nft" && Array.isArray(x.nft_data));
   for(const col of items){
     const c = (col.contract_address || "").toLowerCase();
-    if(!c) continue;
-    if(!map[c]) map[c] = {};
+    if(!c) continue; if(!map[c]) map[c] = {};
     for(const nft of col.nft_data){
       const tid = tidyId(nft.token_id ?? "");
       const meta = nft.external_data || {};
@@ -155,69 +161,114 @@ function buildOwnedTokenMap(data){
   }
   return map;
 }
-const META_CACHE = new Map(); // `${chainId}:${contract}:${tokenId}`
-async function fetchSingleMetadata(chainId, contract, tokenId){
-  const key = `${chainId}:${contract.toLowerCase()}:${tokenId}`;
-  if(META_CACHE.has(key)) return META_CACHE.get(key);
-  try{
-    const url = `https://api.covalenthq.com/v1/${chainId}/tokens/${contract}/nft_metadata/${tokenId}/?t=${Date.now()}`;
-    const json = await covalentFetch(url);
-    const item  = json?.data?.items?.[0];
-    const nd    = item?.nft_data?.[0];
-    const ed    = nd?.external_data || {};
-    const img   = toHttpFromIpfs(ed.image || "");
-    const collection = item?.contract_name || "NFT";
-    const name  = ed.name || `${collection} #${tokenId}`;
-    const out = { img, name, collection };
-    META_CACHE.set(key, out);
-    return out;
-  }catch(_){
-    META_CACHE.set(key, null);
-    return null;
+
+/*** ON-CHAIN RPC with round-robin ***/
+async function ethCall(chainId, to, data){
+  const endpoints = RPCS[chainId] || [];
+  let lastErr;
+  for(const url of endpoints){
+    try{
+      const r = await fetch(url, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ jsonrpc:'2.0', id:1, method:'eth_call', params:[{to, data}, 'latest'] })
+      });
+      if(!r.ok) { lastErr = new Error(`HTTP ${r.status}`); continue; }
+      const j = await r.json();
+      if(j.error) { lastErr = new Error(j.error.message); continue; }
+      return j.result;
+    }catch(e){ lastErr = e; }
   }
+  throw lastErr || new Error('No RPC endpoint');
 }
 
-/*** ON-CHAIN RPC FALLBACK (no API key) ***/
 // selectors
 const SEL = {
-  ownerOf:  '0x6352211e', // ERC721 ownerOf(uint256)
-  bal1155:  '0x00fdd58e'  // ERC1155 balanceOf(address,uint256)
+  ownerOf: '0x6352211e',    // ERC721 ownerOf(uint256)
+  bal1155: '0x00fdd58e',    // ERC1155 balanceOf(address,uint256)
+  tokenURI:'0xc87b56dd',    // ERC721 tokenURI(uint256)
+  uri1155: '0x0e89341c'     // ERC1155 uri(uint256)
 };
-const hex = (v)=>v.startsWith('0x')?v:`0x${v}`;
-const encU256 = (n)=> {
-  const bn = typeof n==='bigint' ? n : BigInt(n);
-  return '0x' + bn.toString(16).padStart(64,'0');
-};
-const encAddr = (a)=> '0x' + '0'.repeat(24) + a.replace(/^0x/,'').toLowerCase();
-async function ethCall(chainId, to, data){
-  const r = await fetch(RPC[chainId], {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ jsonrpc:'2.0', id:1, method:'eth_call', params:[{to, data}, 'latest'] })
-  });
-  const j = await r.json();
-  if(j.error) throw new Error(j.error.message);
-  return j.result; // hex
-}
+const encU256 = (n)=> '0x' + BigInt(n).toString(16).padStart(64,'0');
+const encAddr32 = (a)=> '0x' + '0'.repeat(24) + a.replace(/^0x/,'').toLowerCase();
+
+// sahiplik
 async function checkOwnedOnchain({chainId, contract, address, tokenId}){
   const id = BigInt(tokenId);
-
-  // Try ERC1155 balanceOf(address,uint256)
+  // ERC1155 balanceOf(address,uint256)
   try{
-    const data = SEL.bal1155 + encAddr(address).slice(2).padStart(64,'0') + encU256(id).slice(2);
+    const data = SEL.bal1155 + encAddr32(address).slice(2) + encU256(id).slice(2);
     const out = await ethCall(chainId, contract, data);
     if (BigInt(out) > 0n) return true;
   }catch(_){}
-
-  // Try ERC721 ownerOf(uint256)
+  // ERC721 ownerOf(uint256)
   try{
     const data = SEL.ownerOf + encU256(id).slice(2);
     const out = await ethCall(chainId, contract, data);
     const owner = '0x' + out.slice(-40);
-    return owner.toLowerCase() === address.toLowerCase();
+    if (owner.toLowerCase() === address.toLowerCase()) return true;
   }catch(_){}
-
   return false;
+}
+
+// on-chain metadata fallback
+async function fetchOnchainMetadata(chainId, contract, tokenId){
+  // 1) ERC721 tokenURI
+  try{
+    const data = SEL.tokenURI + encU256(tokenId).slice(2);
+    const res = await ethCall(chainId, contract, data);
+    if(res && res !== '0x'){
+      const uri = decodeAbiString(res);
+      const meta = await fetchJson(resolve1155Id(toHttpFromIpfs(uri), tokenId));
+      if(meta) return normalizeMeta(meta);
+    }
+  }catch(_){}
+  // 2) ERC1155 uri(uint256)
+  try{
+    const data = SEL.uri1155 + encU256(tokenId).slice(2);
+    const res = await ethCall(chainId, contract, data);
+    if(res && res !== '0x'){
+      const uri = decodeAbiString(res);
+      const url = resolve1155Id(toHttpFromIpfs(uri), tokenId);
+      const meta = await fetchJson(url);
+      if(meta) return normalizeMeta(meta);
+    }
+  }catch(_){}
+  return null;
+}
+
+// helpers for metadata
+function decodeAbiString(hexData){
+  // Basic ABI string decoder for single string return
+  try{
+    const hex = hexData.startsWith('0x') ? hexData.slice(2) : hexData;
+    // offset @0..31, then length @64..95, then data
+    const len = parseInt(hex.slice(64, 128), 16);
+    const strHex = hex.slice(128, 128 + len*2);
+    const bytes = new Uint8Array(strHex.match(/.{1,2}/g).map(b=>parseInt(b,16)));
+    return new TextDecoder().decode(bytes);
+  }catch{ return ""; }
+}
+function resolve1155Id(uri, tokenId){
+  // {id} -> 64-lower-hex (no 0x)
+  if(!uri) return uri;
+  if(uri.includes('{id}')){
+    const idHex = BigInt(tokenId).toString(16).padStart(64,'0');
+    return uri.replace('{id}', idHex);
+  }
+  return uri;
+}
+async function fetchJson(url){
+  try{
+    const r = await fetch(url, {cache:'no-store'});
+    if(!r.ok) return null;
+    return await r.json();
+  }catch{ return null; }
+}
+function normalizeMeta(meta){
+  const img = toHttpFromIpfs(meta.image || meta.image_url || "");
+  const name = meta.name || "";
+  return { img, name, collection: "" };
 }
 
 /*** RENDER ***/
@@ -239,20 +290,21 @@ async function renderTargets({targets, ownedMap, gridEl, address}){
 
     // Görsel/isim
     let img = "", titleName = "NFT";
+    // Covalent metadata varsa
     if(owned && ownedMap && ownedMap[cLower] && ownedMap[cLower][tid]){
       const m = ownedMap[cLower][tid];
       img = m?.img || "";
       titleName = m?.collection || "NFT";
     }
+    // On-chain metadata fallback
     if(!img){
-      const meta = await fetchSingleMetadata(t.chainId, t.contract, tid);
+      const meta = await fetchOnchainMetadata(t.chainId, t.contract, tid);
       if(meta){
         img = meta.img || img;
-        titleName = meta.collection || titleName;
+        if(meta.name) titleName = meta.name;
       }
     }
 
-    // Card
     const card = document.createElement("div");
     card.className = "card";
 
@@ -270,7 +322,7 @@ async function renderTargets({targets, ownedMap, gridEl, address}){
     info.className = "meta";
     info.innerHTML = `
       <div style="font-weight:700;font-size:15px;margin-bottom:4px">
-        ${titleName} — #${displayId}
+        ${titleName || 'NFT'} — #${displayId}
       </div>
       <div class="${owned?'ok':'no'}">${owned?'You have':'Missing'}</div>
     `;
@@ -310,7 +362,7 @@ async function checkAll(){
 
   let mapEth=null, mapBase=null;
 
-  // Covalent try (best-effort); hata olursa sadece RPC ile devam
+  // Covalent (varsa) — hata olursa sadece RPC ile devam
   try{
     if(nodeTargets.length){
       const ethRes = await schedule(()=>fetchBalances(1, addr));
