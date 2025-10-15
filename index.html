@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0" />
+<title>NFT Checker — Node Runner (ETH) / Alpha, Beta, Gamma (Base)</title>
+<style>
+  :root { --bg:#0f1115; --card:#141825; --bd:#22283a; --txt:#e7e9ee; --muted:#a6adbb; }
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--txt);margin:0}
+  header{padding:18px 16px;text-align:center;border-bottom:1px solid #1e2230}
+  .row{display:flex;justify-content:center;gap:8px;flex-wrap:wrap}
+  input,button{padding:10px 12px;font-size:16px;border-radius:10px;border:1px solid #2a3042;background:var(--card);color:var(--txt)}
+  button{cursor:pointer}
+  .hint{width:100%;text-align:center;font-size:12px;color:var(--muted);margin-top:6px}
+  main{max-width:1200px;margin:0 auto;padding:16px}
+  h2{margin:24px 0 12px;font-size:20px;font-weight:700}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;overflow:hidden;text-align:center}
+  .thumbs{padding:10px;min-height:84px;display:flex;justify-content:center;align-items:center}
+  .thumbs img{width:100px;height:100px;object-fit:cover;border-radius:8px;background:#0b0e16}
+  .meta{padding:10px;border-top:1px solid var(--bd)}
+  .ok{color:#7CFC98;font-weight:700}
+  .no{color:#ff6b6b;font-weight:700}
+  .muted{color:var(--muted)}
+  .status{margin-top:10px;text-align:center;opacity:.9}
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <input id="address" placeholder="Nexus wallet address (0x…)" size="46" />
+    <button id="goBtn">Check</button>
+    <div class="hint">Your newly minted NFTs should appear within about 3–5 minutes.</div>
+  </div>
+  <div id="status" class="status"></div>
+</header>
+
+<main>
+  <section>
+    <h2>Node Runner — Ethereum</h2>
+    <div id="grid-node-eth" class="grid"></div>
+    <div id="status-node-eth" class="status muted"></div>
+  </section>
+
+  <section>
+    <h2>Alpha — Base</h2>
+    <div id="grid-alpha-base" class="grid"></div>
+    <div id="status-alpha-base" class="status muted"></div>
+  </section>
+
+  <section>
+    <h2>Beta — Base</h2>
+    <div id="grid-beta-base" class="grid"></div>
+    <div id="status-beta-base" class="status muted"></div>
+  </section>
+
+  <section>
+    <h2>Gamma — Base</h2>
+    <div id="grid-gamma-base" class="grid"></div>
+    <div id="status-gamma-base" class="status muted"></div>
+  </section>
+</main>
+
+<script>
+/*** CONFIG ***/
+const COVALENT_KEY = "cqt_rQmpdjRkVtvctfYTqQ63mBKq3GWr"; // varsa kullanır, yoksa RPC fallback çalışır
+const RPC = {
+  1:    'https://cloudflare-eth.com',    // Ethereum (public)
+  8453: 'https://mainnet.base.org'       // Base (public)
+};
+
+/*** TARGETS ***/
+const TARGETS = [
+  // Node Runner — Ethereum
+  { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"0" },
+  { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"1" },
+  { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"2" },
+  { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"3" },
+  { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"4" },
+
+  // Alpha — Base
+  { group:"alpha", chainId:8453, contract:"0x307d51ad986d249f0b69a78c92ae2a6c140c19a4", tokenId:"0" },
+  { group:"alpha", chainId:8453, contract:"0x307d51ad986d249f0b69a78c92ae2a6c140c19a4", tokenId:"1" },
+  { group:"alpha", chainId:8453, contract:"0x307d51ad986d249f0b69a78c92ae2a6c140c19a4", tokenId:"2" },
+  { group:"alpha", chainId:8453, contract:"0x307d51ad986d249f0b69a78c92ae2a6c140c19a4", tokenId:"3" },
+  { group:"alpha", chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"4" },
+
+  // Beta — Base
+  { group:"beta",  chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"0" },
+  { group:"beta",  chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"1" },
+  { group:"beta",  chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"2" },
+  { group:"beta",  chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"3" },
+
+  // Gamma — Base
+  { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"0" },
+  { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"1" },
+  { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"2" },
+  { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"3" },
+  { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"4" },
+];
+
+/*** HELPERS ***/
+function toHttpFromIpfs(url){
+  if(!url) return "";
+  if(url.startsWith("ipfs://")) return `https://ipfs.io/ipfs/${url.slice(7)}`;
+  if(/^\/?ipfs\//i.test(url))   return "https://ipfs.io/" + url.replace(/^\/?/,"");
+  return url;
+}
+function tidyId(x){
+  const n = Number(String(x).replace(/^0+/, "")); // "0003"->3
+  return Number.isFinite(n) ? String(n) : String(x);
+}
+
+/*** SIMPLE CONCURRENCY (avoid bursts) ***/
+const MAX_CONCURRENCY = 4;
+let active = 0, queue = [];
+function schedule(fn){ return new Promise((res,rej)=>{
+  queue.push({fn,res,rej}); runQueue();
+});}
+function runQueue(){
+  while(active<MAX_CONCURRENCY && queue.length){
+    const {fn,res,rej} = queue.shift(); active++;
+    fn().then(res,rej).finally(()=>{ active--; setTimeout(runQueue,200); });
+  }
+}
+
+/*** COVALENT (best effort) ***/
+async function covalentFetch(url){
+  // dener: Authorization → olmazsa X-API-Key
+  let r = await fetch(url, { headers: { Authorization: `Bearer ${COVALENT_KEY}` }, cache: 'no-store' });
+  if(r.status===401 || r.status===403){
+    r = await fetch(url, { headers: { 'X-API-Key': COVALENT_KEY }, cache: 'no-store' });
+  }
+  if(!r.ok) throw new Error(`Covalent ${r.status}`);
+  return r.json();
+}
+async function fetchBalances(chainId, address){
+  const url = `https://api.covalenthq.com/v1/${chainId}/address/${address}/balances_v2/?nft=true&no-nft-fetch=false&t=${Date.now()}`;
+  return covalentFetch(url);
+}
+function buildOwnedTokenMap(data){
+  const map = {};
+  const items = (data?.data?.items || []).filter(x => x.type === "nft" && Array.isArray(x.nft_data));
+  for(const col of items){
+    const c = (col.contract_address || "").toLowerCase();
+    if(!c) continue;
+    if(!map[c]) map[c] = {};
+    for(const nft of col.nft_data){
+      const tid = tidyId(nft.token_id ?? "");
+      const meta = nft.external_data || {};
+      const img = toHttpFromIpfs(meta.image || "");
+      const fallbackName = `${col.contract_name || "NFT"} #${tid}`;
+      map[c][tid] = { img, name: meta.name || fallbackName, collection: col.contract_name || "NFT" };
+    }
+  }
+  return map;
+}
+const META_CACHE = new Map(); // `${chainId}:${contract}:${tokenId}`
+async function fetchSingleMetadata(chainId, contract, tokenId){
+  const key = `${chainId}:${contract.toLowerCase()}:${tokenId}`;
+  if(META_CACHE.has(key)) return META_CACHE.get(key);
+  try{
+    const url = `https://api.covalenthq.com/v1/${chainId}/tokens/${contract}/nft_metadata/${tokenId}/?t=${Date.now()}`;
+    const json = await covalentFetch(url);
+    const item  = json?.data?.items?.[0];
+    const nd    = item?.nft_data?.[0];
+    const ed    = nd?.external_data || {};
+    const img   = toHttpFromIpfs(ed.image || "");
+    const collection = item?.contract_name || "NFT";
+    const name  = ed.name || `${collection} #${tokenId}`;
+    const out = { img, name, collection };
+    META_CACHE.set(key, out);
+    return out;
+  }catch(_){
+    META_CACHE.set(key, null);
+    return null;
+  }
+}
+
+/*** ON-CHAIN RPC FALLBACK (no API key) ***/
+// selectors
+const SEL = {
+  ownerOf:  '0x6352211e', // ERC721 ownerOf(uint256)
+  bal1155:  '0x00fdd58e'  // ERC1155 balanceOf(address,uint256)
+};
+const hex = (v)=>v.startsWith('0x')?v:`0x${v}`;
+const encU256 = (n)=> {
+  const bn = typeof n==='bigint' ? n : BigInt(n);
+  return '0x' + bn.toString(16).padStart(64,'0');
+};
+const encAddr = (a)=> '0x' + '0'.repeat(24) + a.replace(/^0x/,'').toLowerCase();
+async function ethCall(chainId, to, data){
+  const r = await fetch(RPC[chainId], {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ jsonrpc:'2.0', id:1, method:'eth_call', params:[{to, data}, 'latest'] })
+  });
+  const j = await r.json();
+  if(j.error) throw new Error(j.error.message);
+  return j.result; // hex
+}
+async function checkOwnedOnchain({chainId, contract, address, tokenId}){
+  const id = BigInt(tokenId);
+
+  // Try ERC1155 balanceOf(address,uint256)
+  try{
+    const data = SEL.bal1155 + encAddr(address).slice(2).padStart(64,'0') + encU256(id).slice(2);
+    const out = await ethCall(chainId, contract, data);
+    if (BigInt(out) > 0n) return true;
+  }catch(_){}
+
+  // Try ERC721 ownerOf(uint256)
+  try{
+    const data = SEL.ownerOf + encU256(id).slice(2);
+    const out = await ethCall(chainId, contract, data);
+    const owner = '0x' + out.slice(-40);
+    return owner.toLowerCase() === address.toLowerCase();
+  }catch(_){}
+
+  return false;
+}
+
+/*** RENDER ***/
+async function renderTargets({targets, ownedMap, gridEl, address}){
+  gridEl.innerHTML = "";
+  const cards = await Promise.all(targets.map(t => schedule(async () => {
+    const cLower = t.contract.toLowerCase();
+    const tid = tidyId(t.tokenId);
+    const displayId = (Number(tid) + 1);
+
+    // 1) Covalent sahiplik
+    let owned = !!(ownedMap && ownedMap[cLower] && ownedMap[cLower][tid]);
+
+    // 2) Sahiplik bulunamadıysa → ON-CHAIN fallback
+    if(!owned){
+      try { owned = await checkOwnedOnchain({ chainId:t.chainId, contract:t.contract, address, tokenId:tid }); }
+      catch(_){ owned = false; }
+    }
+
+    // Görsel/isim
+    let img = "", titleName = "NFT";
+    if(owned && ownedMap && ownedMap[cLower] && ownedMap[cLower][tid]){
+      const m = ownedMap[cLower][tid];
+      img = m?.img || "";
+      titleName = m?.collection || "NFT";
+    }
+    if(!img){
+      const meta = await fetchSingleMetadata(t.chainId, t.contract, tid);
+      if(meta){
+        img = meta.img || img;
+        titleName = meta.collection || titleName;
+      }
+    }
+
+    // Card
+    const card = document.createElement("div");
+    card.className = "card";
+
+    const thumbs = document.createElement("div");
+    thumbs.className = "thumbs";
+    if(img){
+      const el = document.createElement("img");
+      el.src = img; el.alt = `${titleName} #${displayId}`; el.loading = "lazy";
+      thumbs.appendChild(el);
+    } else {
+      thumbs.innerHTML = `<div class="muted">(No preview)</div>`;
+    }
+
+    const info = document.createElement("div");
+    info.className = "meta";
+    info.innerHTML = `
+      <div style="font-weight:700;font-size:15px;margin-bottom:4px">
+        ${titleName} — #${displayId}
+      </div>
+      <div class="${owned?'ok':'no'}">${owned?'You have':'Missing'}</div>
+    `;
+
+    card.appendChild(thumbs);
+    card.appendChild(info);
+    return card;
+  })));
+  for(const c of cards) gridEl.appendChild(c);
+}
+
+/*** FLOW ***/
+async function checkAll(){
+  const addr = document.getElementById('address').value.trim();
+  const status = document.getElementById('status');
+  const gridNodeEth   = document.getElementById('grid-node-eth');
+  const gridAlphaBase = document.getElementById('grid-alpha-base');
+  const gridBetaBase  = document.getElementById('grid-beta-base');
+  const gridGammaBase = document.getElementById('grid-gamma-base');
+  const statusNodeEth   = document.getElementById('status-node-eth');
+  const statusAlphaBase = document.getElementById('status-alpha-base');
+  const statusBetaBase  = document.getElementById('status-beta-base');
+  const statusGammaBase = document.getElementById('status-gamma-base');
+
+  gridNodeEth.innerHTML=gridAlphaBase.innerHTML=gridBetaBase.innerHTML=gridGammaBase.innerHTML="";
+  statusNodeEth.textContent=statusAlphaBase.textContent=statusBetaBase.textContent=statusGammaBase.textContent="";
+  status.textContent="";
+
+  if(!/^0x[a-fA-F0-9]{40}$/.test(addr)){ alert("Please enter a valid 0x address."); return; }
+
+  const nodeTargets  = TARGETS.filter(t => t.group==="node");
+  const alphaTargets = TARGETS.filter(t => t.group==="alpha");
+  const betaTargets  = TARGETS.filter(t => t.group==="beta");
+  const gammaTargets = TARGETS.filter(t => t.group==="gamma");
+
+  status.textContent = "Loading…";
+
+  let mapEth=null, mapBase=null;
+
+  // Covalent try (best-effort); hata olursa sadece RPC ile devam
+  try{
+    if(nodeTargets.length){
+      const ethRes = await schedule(()=>fetchBalances(1, addr));
+      mapEth = buildOwnedTokenMap(ethRes);
+    }
+  }catch(_){ statusNodeEth.textContent = "Using on-chain fallback for Ethereum."; }
+
+  try{
+    if(alphaTargets.length || betaTargets.length || gammaTargets.length){
+      const baseRes = await schedule(()=>fetchBalances(8453, addr));
+      mapBase = buildOwnedTokenMap(baseRes);
+    }
+  }catch(_){ statusAlphaBase.textContent = "Using on-chain fallback for Base."; }
+
+  try{
+    if(nodeTargets.length)  await renderTargets({targets: nodeTargets,  ownedMap: mapEth||{},  gridEl: gridNodeEth,  address: addr});
+    if(alphaTargets.length) await renderTargets({targets: alphaTargets, ownedMap: mapBase||{}, gridEl: gridAlphaBase, address: addr});
+    if(betaTargets.length)  await renderTargets({targets: betaTargets,  ownedMap: mapBase||{}, gridEl: gridBetaBase,  address: addr});
+    if(gammaTargets.length) await renderTargets({targets: gammaTargets, ownedMap: mapBase||{}, gridEl: gridGammaBase, address: addr});
+    status.textContent = "";
+  }catch(e){
+    console.error(e);
+    status.innerHTML = `<span class="no">Error: ${e.message}</span>`;
+  }
+}
+
+document.getElementById('goBtn').addEventListener('click', checkAll);
+</script>
+</body>
+</html>
