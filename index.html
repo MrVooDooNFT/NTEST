@@ -67,10 +67,17 @@
   </section>
 </main>
 
+<!-- ethers.js for on-chain fallback -->
+<script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+
 <script>
 const COVALENT_KEY = "cqt_rQmpdjRkVtvctfYTqQ63mBKq3GWr";
+const RPC = {
+  1:    "https://ethereum.publicnode.com",
+  8453: "https://mainnet.base.org",
+};
 
-/* Targets */
+/* Targets (fixed Delta last id = 4) */
 const TARGETS = [
   // Node Runner — Ethereum (chainId:1)
   { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"0" },
@@ -99,7 +106,7 @@ const TARGETS = [
   { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"3" },
   { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"4" },
 
-  // Delta — Base (chainId:8453)  <-- NEW
+  // Delta — Base (chainId:8453)
   { group:"delta", chainId:8453, contract:"0x27b43b897ff89a1c9999e317304e756133beb105", tokenId:"0" },
   { group:"delta", chainId:8453, contract:"0x27b43b897ff89a1c9999e317304e756133beb105", tokenId:"1" },
   { group:"delta", chainId:8453, contract:"0x27b43b897ff89a1c9999e317304e756133beb105", tokenId:"2" },
@@ -119,13 +126,23 @@ function tidyId(x){
   return Number.isFinite(n) ? String(n) : String(x);
 }
 
-/* wallet balances -> owned map */
+/* Covalent (with single retry + soft error) */
 async function fetchBalances(chainId, address){
   const url = `https://api.covalenthq.com/v1/${chainId}/address/${address}/balances_v2/?nft=true&no-nft-fetch=false`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${COVALENT_KEY}` }});
-  if(!res.ok) throw new Error(`API ${chainId} status ${res.status}`);
-  return res.json();
+  for (let attempt=1; attempt<=2; attempt++){
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${COVALENT_KEY}` }});
+    if (res.ok) return res.json();
+    // retry on 429/5xx once
+    if (attempt===1 && (res.status===429 || res.status>=500)) {
+      await new Promise(r=>setTimeout(r, 800));
+      continue;
+    }
+    // soft-fail: return empty items so UI can still render
+    return { data:{ items:[] }, _error:{ status:res.status, body: await res.text().catch(()=>"") } };
+  }
 }
+
+/* Build owned map from Covalent */
 function buildOwnedTokenMap(data){
   const map = {};
   const items = (data?.data?.items || []).filter(x => x.type === "nft" && Array.isArray(x.nft_data));
@@ -144,7 +161,69 @@ function buildOwnedTokenMap(data){
   return map;
 }
 
-/* single metadata (cache) */
+/* ---- On-chain fallback (public RPC, no rate limit) ---- */
+function getProvider(chainId){ return new ethers.providers.JsonRpcProvider(RPC[chainId]); }
+
+async function detectOwnership(chainId, contract, tokenId, address){
+  try{
+    const provider = getProvider(chainId);
+    const ca = new ethers.Contract(contract, [
+      "function ownerOf(uint256) view returns (address)",                // ERC721
+      "function balanceOf(address,uint256) view returns (uint256)",     // ERC1155
+    ], provider);
+
+    // try ERC721
+    try{
+      const owner = await ca.ownerOf(ethers.BigNumber.from(tokenId));
+      if (owner && owner.toLowerCase() === address.toLowerCase()) return true;
+    } catch(_) { /* not ERC721 or not minted */ }
+
+    // try ERC1155
+    try{
+      const bal = await ca.balanceOf(address, ethers.BigNumber.from(tokenId));
+      return bal && bal.toString() !== "0";
+    } catch(_) {}
+
+    return false;
+  }catch(e){ console.warn("detectOwnership error", e); return false; }
+}
+
+/* tokenURI/uri → metadata json */
+async function fetchMetadataOnChain(chainId, contract, tokenId){
+  try{
+    const provider = getProvider(chainId);
+    const ca = new ethers.Contract(contract, [
+      "function tokenURI(uint256) view returns (string)",
+      "function uri(uint256) view returns (string)"
+    ], provider);
+
+    let uri;
+    // ERC721 tokenURI
+    try{ uri = await ca.tokenURI(ethers.BigNumber.from(tokenId)); } catch(_) {}
+    // ERC1155 uri (may contain {id})
+    if(!uri){
+      try{ uri = await ca.uri(ethers.BigNumber.from(tokenId)); } catch(_) {}
+    }
+    if(!uri) return null;
+
+    // handle {id} placeholder (ERC1155 → hex64)
+    if (uri.includes("{id}")){
+      let hex = Number(tokenId).toString(16);
+      hex = hex.padStart(64, "0");
+      uri = uri.replace(/\{id\}/g, hex);
+    }
+    const http = toHttpFromIpfs(uri);
+    const res = await fetch(http);
+    if(!res.ok) return null;
+    const j = await res.json().catch(()=>null);
+    if(!j) return null;
+    const img = toHttpFromIpfs(j.image || j.image_url || "");
+    const name = j.name || "";
+    return { img, name };
+  }catch(e){ console.warn("fetchMetadataOnChain error", e); return null; }
+}
+
+/* single metadata via Covalent (cached) */
 const META_CACHE = new Map(); // `${chainId}:${contract}:${tokenId}`
 async function fetchSingleMetadata(chainId, contract, tokenId){
   const key = `${chainId}:${contract.toLowerCase()}:${tokenId}`;
@@ -165,7 +244,7 @@ async function fetchSingleMetadata(chainId, contract, tokenId){
   return out;
 }
 
-/* render (fix collection name via single metadata when needed) */
+/* render (Covalent → fallback to on-chain if needed) */
 async function renderTargets({targets, ownedMap, gridEl}){
   gridEl.innerHTML = "";
 
@@ -174,25 +253,42 @@ async function renderTargets({targets, ownedMap, gridEl}){
     const tid = tidyId(t.tokenId);
     const displayId = (Number(tid) + 1);
 
+    // First try Covalent ownership
     let owned = !!(ownedMap[cLower] && ownedMap[cLower][tid]);
     let img = "", titleName = "NFT";
 
+    // Prefer Covalent metadata if available
     if(owned){
-      let m = ownedMap[cLower][tid];
+      const m = ownedMap[cLower][tid];
       img = m?.img || "";
       titleName = m?.collection || "NFT";
-      if(!titleName || /^nft$/i.test(titleName)){
-        const meta = await fetchSingleMetadata(t.chainId, t.contract, tid);
-        if(meta){
-          titleName = meta.collection || titleName;
-          if(!img) img = meta.img || "";
+      // If collection looks generic, optionally enrich later
+    }
+
+    // If Covalent didn’t confirm OR title still generic => on-chain fallback for Base/ETH
+    if (!owned || !titleName || /^nft$/i.test(titleName)){
+      // Only hit chain when needed (slower)
+      const addr = document.getElementById('address').value.trim().toLowerCase();
+      const ocOwned = await detectOwnership(t.chainId, t.contract, tid, addr);
+      if (ocOwned) owned = true;
+
+      // Try on-chain metadata (tokenURI/uri)
+      const ocMeta = await fetchMetadataOnChain(t.chainId, t.contract, tid);
+      if (ocMeta){
+        if (!img && ocMeta.img) img = ocMeta.img;
+        if (ocMeta.name){
+          // Use collection-like title if name contains a # already; else keep generic contract name from Covalent later
+          titleName = ocMeta.name.replace(/\s*#\d+$/,""); // strip trailing #num if present
         }
       }
-    } else {
-      const meta = await fetchSingleMetadata(t.chainId, t.contract, tid);
-      if(meta){
-        img = meta.img || "";
-        titleName = meta.collection || "NFT";
+
+      // If still no collection title, try Covalent single metadata as last resort
+      if (!img || /^nft$/i.test(titleName) || !titleName){
+        const co = await fetchSingleMetadata(t.chainId, t.contract, tid);
+        if (co){
+          if (!img && co.img) img = co.img;
+          if (!titleName || /^nft$/i.test(titleName)) titleName = co.collection || "NFT";
+        }
       }
     }
 
@@ -213,7 +309,7 @@ async function renderTargets({targets, ownedMap, gridEl}){
     info.className = "meta";
     info.innerHTML = `
       <div style="font-weight:700;font-size:15px;margin-bottom:4px">
-        ${titleName} — #${displayId}
+        ${titleName || "NFT"} — #${displayId}
       </div>
       <div class="${owned?'ok':'no'}">${owned?'You have':'Missing'}</div>
     `;
@@ -269,15 +365,32 @@ async function checkAll(){
     if(wantsEth && ethRes.status==="fulfilled"){
       const mapEth = buildOwnedTokenMap(ethRes.value);
       await renderTargets({targets: nodeTargets, ownedMap: mapEth, gridEl: gridNodeEth});
-    } else if (wantsEth) statusNodeEth.textContent = "Error while fetching Ethereum data.";
+    } else if (wantsEth){
+      const empty = {};
+      await renderTargets({targets: nodeTargets, ownedMap: empty, gridEl: gridNodeEth}); // on-chain fallback will kick in
+      statusNodeEth.textContent = "Ethereum API issue — using on-chain fallback.";
+    }
 
-    if(wantsBase && baseRes.status==="fulfilled"){
-      const mapBase = buildOwnedTokenMap(baseRes.value);
-      await renderTargets({targets: alphaTargets, ownedMap: mapBase, gridEl: gridAlphaBase});
-      await renderTargets({targets: betaTargets,  ownedMap: mapBase, gridEl: gridBetaBase});
-      await renderTargets({targets: gammaTargets, ownedMap: mapBase, gridEl: gridGammaBase});
-      await renderTargets({targets: deltaTargets, ownedMap: mapBase, gridEl: gridDeltaBase});
-    } else if (wantsBase) statusAlphaBase.textContent = "Error while fetching Base data (Alpha/Beta/Gamma/Delta).";
+    if(wantsBase){
+      if (baseRes.status==="fulfilled"){
+        const mapBase = buildOwnedTokenMap(baseRes.value);
+        await renderTargets({targets: alphaTargets, ownedMap: mapBase, gridEl: gridAlphaBase});
+        await renderTargets({targets: betaTargets,  ownedMap: mapBase, gridEl: gridBetaBase});
+        await renderTargets({targets: gammaTargets, ownedMap: mapBase, gridEl: gridGammaBase});
+        await renderTargets({targets: deltaTargets, ownedMap: mapBase, gridEl: gridDeltaBase});
+        if (baseRes.value?._error){
+          statusAlphaBase.textContent = `Base API returned ${baseRes.value._error.status}. Using on-chain fallback where needed.`;
+        }
+      } else {
+        // complete Covalent failure → on-chain fallback only
+        const empty = {};
+        await renderTargets({targets: alphaTargets, ownedMap: empty, gridEl: gridAlphaBase});
+        await renderTargets({targets: betaTargets,  ownedMap: empty, gridEl: gridBetaBase});
+        await renderTargets({targets: gammaTargets, ownedMap: empty, gridEl: gridGammaBase});
+        await renderTargets({targets: deltaTargets, ownedMap: empty, gridEl: gridDeltaBase});
+        statusAlphaBase.textContent = "Base API error — using on-chain fallback.";
+      }
+    }
 
     status.textContent = "";
   }catch(e){
