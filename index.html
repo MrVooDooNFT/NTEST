@@ -136,7 +136,7 @@ const tidyId = (x)=>{
   return Number.isFinite(n) ? String(n) : String(x);
 };
 
-/*** CONCURRENCY (biraz arttırıldı) ***/
+/*** CONCURRENCY ***/
 const MAX_CONCURRENCY = 6;
 let active = 0, queue = [];
 function schedule(fn){ return new Promise((res,rej)=>{ queue.push({fn,res,rej}); runQueue(); });}
@@ -240,6 +240,9 @@ function normalizeMeta(meta){
   return { img, name, collection: "" };
 }
 
+/*** CACHE (on-chain metadata için) ***/
+const META_CACHE = new Map(); // key: `${chainId}:${contract}:${tokenId}`
+
 /*** OWNERSHIP + METADATA ***/
 async function checkOwnedOnchain({chainId, contract, address, tokenId}){
   const id = BigInt(tokenId);
@@ -259,27 +262,36 @@ async function checkOwnedOnchain({chainId, contract, address, tokenId}){
   return false;
 }
 async function fetchOnchainMetadata(chainId, contract, tokenId){
-  // Önce ERC721 tokenURI, sonra ERC1155 uri
+  const key = `${chainId}:${contract.toLowerCase()}:${tokenId}`;
+  if (META_CACHE.has(key)) return META_CACHE.get(key);
+
+  // Önce ERC721 tokenURI, olmazsa ERC1155 uri
+  let out = null;
   try{
     const data = SEL.tokenURI + encU256(tokenId).slice(2);
     const res = await ethCall(chainId, contract, data);
     if(res && res !== '0x'){
       const uri = decodeAbiString(res);
       const meta = await fetchJson(resolve1155Id(toHttpFromIpfs(uri), tokenId));
-      if(meta) return normalizeMeta(meta);
+      if(meta) out = normalizeMeta(meta);
     }
   }catch(_){}
-  try{
-    const data = SEL.uri1155 + encU256(tokenId).slice(2);
-    const res = await ethCall(chainId, contract, data);
-    if(res && res !== '0x'){
-      const uri = decodeAbiString(res);
-      const url = resolve1155Id(toHttpFromIpfs(uri), tokenId);
-      const meta = await fetchJson(url);
-      if(meta) return normalizeMeta(meta);
-    }
-  }catch(_){}
-  return null;
+
+  if(!out){
+    try{
+      const data = SEL.uri1155 + encU256(tokenId).slice(2);
+      const res = await ethCall(chainId, contract, data);
+      if(res && res !== '0x'){
+        const uri = decodeAbiString(res);
+        const url = resolve1155Id(toHttpFromIpfs(uri), tokenId);
+        const meta = await fetchJson(url);
+        if(meta) out = normalizeMeta(meta);
+      }
+    }catch(_){}
+  }
+
+  META_CACHE.set(key, out);
+  return out;
 }
 
 /*** RENDER ***/
@@ -299,20 +311,18 @@ async function renderTargets({targets, ownedMap, gridEl, address}){
       catch(_){ owned = false; }
     }
 
-    // Görsel/isim: SADECE owned ise metadata getir (hız için)
+    // Görsel/isim: HER DURUMDA dene (owned olmasa da)
     let img = "", titleName = "NFT";
-    if(owned){
-      if(ownedMap && ownedMap[cLower] && ownedMap[cLower][tid]){
-        const m = ownedMap[cLower][tid];
-        img = m?.img || "";
-        titleName = m?.collection || "NFT";
-      }
-      if(!img){
-        const meta = await fetchOnchainMetadata(t.chainId, t.contract, tid);
-        if(meta){
-          img = meta.img || img;
-          if(meta.name) titleName = meta.name;
-        }
+    if(owned && ownedMap && ownedMap[cLower] && ownedMap[cLower][tid]){
+      const m = ownedMap[cLower][tid];
+      img = m?.img || "";
+      titleName = m?.collection || "NFT";
+    }
+    if(!img){
+      const meta = await fetchOnchainMetadata(t.chainId, t.contract, tid);
+      if(meta){
+        img = meta.img || img;
+        if(meta.name) titleName = meta.name;
       }
     }
 
@@ -335,7 +345,7 @@ async function renderTargets({targets, ownedMap, gridEl, address}){
       <div style="font-weight:700;font-size:15px;margin-bottom:4px">
         ${titleName || 'NFT'} — #${displayId}
       </div>
-        <div class="${owned?'ok':'no'}">${owned?'You have':'Missing'}</div>
+      <div class="${owned?'ok':'no'}">${owned?'You have':'Missing'}</div>
     `;
 
     card.appendChild(thumbs);
