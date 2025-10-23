@@ -28,7 +28,7 @@
 <body>
 <header>
   <div class="row">
-    <input id="address" placeholder="Wallet address (0x…)" size="46" />
+    <input id="address" placeholder="Nexus wallet address (0x…)" size="46" />
     <button id="goBtn">Check</button>
     <div class="hint">Your newly minted NFTs should appear within about 3–5 minutes.</div>
   </div>
@@ -67,89 +67,103 @@
   </section>
 </main>
 
-<!-- ethers.js for on-chain fallback -->
-<script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
-
 <script>
-const COVALENT_KEY = "cqt_rQmpdjRkVtvctfYTqQ63mBKq3GWr";
-const RPC = {
-  1:    "https://ethereum.publicnode.com",
-  8453: "https://mainnet.base.org",
+/*** CONFIG ***/
+// ETH için (opsiyonel) Covalent; Base tamamen RPC ile çalışacak
+const COVALENT_KEY = ""; // istersen ekle; boş bırakılırsa ETH de RPC fallback ile devam eder
+
+// CORS dostu, round-robin RPC listeleri + timeout’lu çağrı
+const RPCS = {
+  1: [
+    'https://rpc.ankr.com/eth',
+    'https://cloudflare-eth.com',
+    'https://1rpc.io/eth'
+  ],
+  8453: [
+    'https://base.blockpi.network/v1/rpc/public',
+    'https://1rpc.io/base',
+    'https://base.drpc.org'
+    // İstersen en öne ekle: 'https://base-mainnet.g.alchemy.com/v2/YOUR_KEY'
+  ]
 };
 
-/* Targets (fixed Delta last id = 4) */
+/*** TARGETS ***/
 const TARGETS = [
-  // Node Runner — Ethereum (chainId:1)
+  // Node Runner — Ethereum (ERC-1155)
   { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"0" },
   { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"1" },
   { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"2" },
   { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"3" },
   { group:"node",  chainId:1,    contract:"0xde63b92033aa77b115db1cec612029625d1c8fa5", tokenId:"4" },
 
-  // Alpha — Base (chainId:8453)
+  // Alpha — Base (ERC-1155)
   { group:"alpha", chainId:8453, contract:"0x307d51ad986d249f0b69a78c92ae2a6c140c19a4", tokenId:"0" },
   { group:"alpha", chainId:8453, contract:"0x307d51ad986d249f0b69a78c92ae2a6c140c19a4", tokenId:"1" },
   { group:"alpha", chainId:8453, contract:"0x307d51ad986d249f0b69a78c92ae2a6c140c19a4", tokenId:"2" },
   { group:"alpha", chainId:8453, contract:"0x307d51ad986d249f0b69a78c92ae2a6c140c19a4", tokenId:"3" },
   { group:"alpha", chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"4" },
 
-  // Beta — Base (chainId:8453)
+  // Beta — Base (ERC-1155)
   { group:"beta",  chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"0" },
   { group:"beta",  chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"1" },
   { group:"beta",  chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"2" },
   { group:"beta",  chainId:8453, contract:"0xe6cd37ef5f27dba134adc081ab9890193520e97a", tokenId:"3" },
 
-  // Gamma — Base (chainId:8453)
+  // Gamma — Base (ERC-1155)
   { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"0" },
   { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"1" },
   { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"2" },
   { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"3" },
   { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"4" },
 
-  // Delta — Base (chainId:8453)
-  { group:"delta", chainId:8453, contract:"0x27b43b897ff89a1c9999e317304e756133beb105", tokenId:"0" },
-  { group:"delta", chainId:8453, contract:"0x27b43b897ff89a1c9999e317304e756133beb105", tokenId:"1" },
-  { group:"delta", chainId:8453, contract:"0x27b43b897ff89a1c9999e317304e756133beb105", tokenId:"2" },
-  { group:"delta", chainId:8453, contract:"0x27b43b897ff89a1c9999e317304e756133beb105", tokenId:"3" },
-  { group:"delta", chainId:8453, contract:"0x27b43b897ff89a1c9999e317304e756133beb105", tokenId:"4" },
+  // Delta — Base (ERC-1155) — (eğer yoksa boş kalır; geleceğe hazır)
+  // { group:"delta", chainId:8453, contract:"0x...", tokenId:"0" },
 ];
 
-/* helpers */
-function toHttpFromIpfs(url){
+/*** HELPERS ***/
+const toHttpFromIpfs = (url)=>{
   if(!url) return "";
-  if(url.startsWith("ipfs://")) return `https://ipfs.io/ipfs/${url.replace("ipfs://","")}`;
-  if(/^\/?ipfs\//i.test(url)) return "https://ipfs.io/" + url.replace(/^\/?/,"");
+  if(url.startsWith("ipfs://")) return `https://ipfs.io/ipfs/${url.slice(7)}`;
+  if(/^\/?ipfs\//i.test(url))   return "https://ipfs.io/" + url.replace(/^\/?/,"");
   return url;
-}
-function tidyId(x){
+};
+const tidyId = (x)=>{
   const n = Number(String(x).replace(/^0+/, "")); // "0003"->3
   return Number.isFinite(n) ? String(n) : String(x);
-}
+};
+const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
 
-/* Covalent (with single retry + soft error) */
-async function fetchBalances(chainId, address){
-  const url = `https://api.covalenthq.com/v1/${chainId}/address/${address}/balances_v2/?nft=true&no-nft-fetch=false`;
-  for (let attempt=1; attempt<=2; attempt++){
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${COVALENT_KEY}` }});
-    if (res.ok) return res.json();
-    // retry on 429/5xx once
-    if (attempt===1 && (res.status===429 || res.status>=500)) {
-      await new Promise(r=>setTimeout(r, 800));
-      continue;
-    }
-    // soft-fail: return empty items so UI can still render
-    return { data:{ items:[] }, _error:{ status:res.status, body: await res.text().catch(()=>"") } };
+/*** CONCURRENCY ***/
+const MAX_CONCURRENCY = 4;
+let active = 0, queue = [];
+function schedule(fn){ return new Promise((res,rej)=>{ queue.push({fn,res,rej}); runQueue(); });}
+function runQueue(){
+  while(active<MAX_CONCURRENCY && queue.length){
+    const {fn,res,rej} = queue.shift(); active++;
+    fn().then(res,rej).finally(()=>{ active--; setTimeout(runQueue,200); });
   }
 }
 
-/* Build owned map from Covalent */
+/*** OPTIONAL: COVALENT (sadece ETH tarafında kullanacağız) ***/
+async function covalentFetch(url){
+  if(!COVALENT_KEY) throw new Error('No Covalent key');
+  let r = await fetch(url, { headers: { Authorization: `Bearer ${COVALENT_KEY}` }, cache:'no-store' });
+  if(r.status===401 || r.status===403){
+    r = await fetch(url, { headers: { 'X-API-Key': COVALENT_KEY }, cache:'no-store' });
+  }
+  if(!r.ok) throw new Error(`Covalent ${r.status}`);
+  return r.json();
+}
+async function fetchBalances(chainId, address){
+  const url = `https://api.covalenthq.com/v1/${chainId}/address/${address}/balances_v2/?nft=true&no-nft-fetch=false&t=${Date.now()}`;
+  return covalentFetch(url);
+}
 function buildOwnedTokenMap(data){
   const map = {};
   const items = (data?.data?.items || []).filter(x => x.type === "nft" && Array.isArray(x.nft_data));
   for(const col of items){
     const c = (col.contract_address || "").toLowerCase();
-    if(!c) continue;
-    if(!map[c]) map[c] = {};
+    if(!c) continue; if(!map[c]) map[c] = {};
     for(const nft of col.nft_data){
       const tid = tidyId(nft.token_id ?? "");
       const meta = nft.external_data || {};
@@ -161,134 +175,153 @@ function buildOwnedTokenMap(data){
   return map;
 }
 
-/* ---- On-chain fallback (public RPC, no rate limit) ---- */
-function getProvider(chainId){ return new ethers.providers.JsonRpcProvider(RPC[chainId]); }
+/*** FETCH WITH TIMEOUT ***/
+async function fetchWithTimeout(url, opts={}, ms=3500) {
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), ms);
+  try { return await fetch(url, { ...opts, signal: ctrl.signal }); }
+  finally { clearTimeout(t); }
+}
 
-async function detectOwnership(chainId, contract, tokenId, address){
-  try{
-    const provider = getProvider(chainId);
-    const ca = new ethers.Contract(contract, [
-      "function ownerOf(uint256) view returns (address)",                // ERC721
-      "function balanceOf(address,uint256) view returns (uint256)",     // ERC1155
-    ], provider);
-
-    // try ERC721
+/*** ETH CALL (timeout + round-robin) ***/
+async function ethCall(chainId, to, data){
+  const endpoints = RPCS[chainId] || [];
+  let lastErr;
+  for (const url of endpoints){
     try{
-      const owner = await ca.ownerOf(ethers.BigNumber.from(tokenId));
-      if (owner && owner.toLowerCase() === address.toLowerCase()) return true;
-    } catch(_) { /* not ERC721 or not minted */ }
-
-    // try ERC1155
-    try{
-      const bal = await ca.balanceOf(address, ethers.BigNumber.from(tokenId));
-      return bal && bal.toString() !== "0";
-    } catch(_) {}
-
-    return false;
-  }catch(e){ console.warn("detectOwnership error", e); return false; }
+      const r = await fetchWithTimeout(url, {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'Accept':'application/json' },
+        body: JSON.stringify({
+          jsonrpc:'2.0', id: Date.now(),
+          method:'eth_call', params:[{ to, data }, 'latest']
+        })
+      }, 3500);
+      if (!r.ok) { lastErr = new Error(`HTTP ${r.status}`); continue; }
+      const j = await r.json();
+      if (j.error) { lastErr = new Error(j.error.message); continue; }
+      if (!j.result) { lastErr = new Error('Empty result'); continue; }
+      return j.result;
+    }catch(e){
+      lastErr = e; // sıradaki endpoint’e geç
+      continue;
+    }
+  }
+  throw lastErr || new Error('No RPC endpoint available');
 }
 
-/* tokenURI/uri → metadata json */
-async function fetchMetadataOnChain(chainId, contract, tokenId){
+/*** SELECTORS + ABI HELPERS ***/
+const SEL = {
+  ownerOf: '0x6352211e',    // ERC721 ownerOf(uint256)
+  bal1155: '0x00fdd58e',    // ERC1155 balanceOf(address,uint256)
+  tokenURI:'0xc87b56dd',    // ERC721 tokenURI(uint256)
+  uri1155: '0x0e89341c'     // ERC1155 uri(uint256)
+};
+const encU256 = (n)=> '0x' + BigInt(n).toString(16).padStart(64,'0');
+const encAddr32 = (a)=> '0x' + '0'.repeat(24) + a.replace(/^0x/,'').toLowerCase();
+
+function decodeAbiString(hexData){
   try{
-    const provider = getProvider(chainId);
-    const ca = new ethers.Contract(contract, [
-      "function tokenURI(uint256) view returns (string)",
-      "function uri(uint256) view returns (string)"
-    ], provider);
-
-    let uri;
-    // ERC721 tokenURI
-    try{ uri = await ca.tokenURI(ethers.BigNumber.from(tokenId)); } catch(_) {}
-    // ERC1155 uri (may contain {id})
-    if(!uri){
-      try{ uri = await ca.uri(ethers.BigNumber.from(tokenId)); } catch(_) {}
-    }
-    if(!uri) return null;
-
-    // handle {id} placeholder (ERC1155 → hex64)
-    if (uri.includes("{id}")){
-      let hex = Number(tokenId).toString(16);
-      hex = hex.padStart(64, "0");
-      uri = uri.replace(/\{id\}/g, hex);
-    }
-    const http = toHttpFromIpfs(uri);
-    const res = await fetch(http);
-    if(!res.ok) return null;
-    const j = await res.json().catch(()=>null);
-    if(!j) return null;
-    const img = toHttpFromIpfs(j.image || j.image_url || "");
-    const name = j.name || "";
-    return { img, name };
-  }catch(e){ console.warn("fetchMetadataOnChain error", e); return null; }
+    const hex = hexData.startsWith('0x') ? hexData.slice(2) : hexData;
+    const len = parseInt(hex.slice(64, 128), 16);
+    const strHex = hex.slice(128, 128 + len*2);
+    const bytes = new Uint8Array(strHex.match(/.{1,2}/g).map(b=>parseInt(b,16)));
+    return new TextDecoder().decode(bytes);
+  }catch{ return ""; }
+}
+function resolve1155Id(uri, tokenId){
+  if(!uri) return uri;
+  if(uri.includes('{id}')){
+    const idHex = BigInt(tokenId).toString(16).padStart(64,'0');
+    return uri.replace('{id}', idHex);
+  }
+  return uri;
+}
+async function fetchJson(url){
+  try{
+    const r = await fetch(url, {cache:'no-store'});
+    if(!r.ok) return null;
+    return await r.json();
+  }catch{ return null; }
+}
+function normalizeMeta(meta){
+  const img = toHttpFromIpfs(meta.image || meta.image_url || "");
+  const name = meta.name || "";
+  return { img, name, collection: "" };
 }
 
-/* single metadata via Covalent (cached) */
-const META_CACHE = new Map(); // `${chainId}:${contract}:${tokenId}`
-async function fetchSingleMetadata(chainId, contract, tokenId){
-  const key = `${chainId}:${contract.toLowerCase()}:${tokenId}`;
-  if(META_CACHE.has(key)) return META_CACHE.get(key);
-
-  const url = `https://api.covalenthq.com/v1/${chainId}/tokens/${contract}/nft_metadata/${tokenId}/`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${COVALENT_KEY}` }});
-  if(!res.ok){ META_CACHE.set(key, null); return null; }
-  const json = await res.json();
-  const item  = json?.data?.items?.[0];
-  const nd    = item?.nft_data?.[0];
-  const ed    = nd?.external_data || {};
-  const img   = toHttpFromIpfs(ed.image || "");
-  const collection = item?.contract_name || "NFT";
-  const name  = ed.name || `${collection} #${tokenId}`;
-  const out = { img, name, collection };
-  META_CACHE.set(key, out);
-  return out;
+/*** OWNERSHIP + METADATA (on-chain) ***/
+async function checkOwnedOnchain({chainId, contract, address, tokenId}){
+  const id = BigInt(tokenId);
+  // ERC1155 balanceOf(address,uint256)
+  try{
+    const data = SEL.bal1155 + encAddr32(address).slice(2) + encU256(id).slice(2);
+    const out = await ethCall(chainId, contract, data);
+    if (BigInt(out) > 0n) return true;
+  }catch(_){}
+  // ERC721 ownerOf(uint256)
+  try{
+    const data = SEL.ownerOf + encU256(id).slice(2);
+    const out = await ethCall(chainId, contract, data);
+    const owner = '0x' + out.slice(-40);
+    if (owner.toLowerCase() === address.toLowerCase()) return true;
+  }catch(_){}
+  return false;
+}
+async function fetchOnchainMetadata(chainId, contract, tokenId){
+  // ERC721 tokenURI
+  try{
+    const data = SEL.tokenURI + encU256(tokenId).slice(2);
+    const res = await ethCall(chainId, contract, data);
+    if(res && res !== '0x'){
+      const uri = decodeAbiString(res);
+      const meta = await fetchJson(resolve1155Id(toHttpFromIpfs(uri), tokenId));
+      if(meta) return normalizeMeta(meta);
+    }
+  }catch(_){}
+  // ERC1155 uri(uint256)
+  try{
+    const data = SEL.uri1155 + encU256(tokenId).slice(2);
+    const res = await ethCall(chainId, contract, data);
+    if(res && res !== '0x'){
+      const uri = decodeAbiString(res);
+      const url = resolve1155Id(toHttpFromIpfs(uri), tokenId);
+      const meta = await fetchJson(url);
+      if(meta) return normalizeMeta(meta);
+    }
+  }catch(_){}
+  return null;
 }
 
-/* render (Covalent → fallback to on-chain if needed) */
-async function renderTargets({targets, ownedMap, gridEl}){
+/*** RENDER ***/
+async function renderTargets({targets, ownedMap, gridEl, address}){
   gridEl.innerHTML = "";
-
-  const cards = await Promise.all(targets.map(async t => {
+  const cards = await Promise.all(targets.map(t => schedule(async () => {
     const cLower = t.contract.toLowerCase();
     const tid = tidyId(t.tokenId);
     const displayId = (Number(tid) + 1);
 
-    // First try Covalent ownership
-    let owned = !!(ownedMap[cLower] && ownedMap[cLower][tid]);
-    let img = "", titleName = "NFT";
+    // 1) ETH için Covalent verisi; Base için ownedMap zaten boş bırakılacak
+    let owned = !!(ownedMap && ownedMap[cLower] && ownedMap[cLower][tid]);
 
-    // Prefer Covalent metadata if available
-    if(owned){
+    // 2) Sahiplik yoksa → on-chain fallback (ETH & Base)
+    if(!owned){
+      try { owned = await checkOwnedOnchain({ chainId:t.chainId, contract:t.contract, address, tokenId:tid }); }
+      catch(_){ owned = false; }
+    }
+
+    // Görsel/isim (on-chain metadata fallback dâhil)
+    let img = "", titleName = "NFT";
+    if(owned && ownedMap && ownedMap[cLower] && ownedMap[cLower][tid]){
       const m = ownedMap[cLower][tid];
       img = m?.img || "";
       titleName = m?.collection || "NFT";
-      // If collection looks generic, optionally enrich later
     }
-
-    // If Covalent didn’t confirm OR title still generic => on-chain fallback for Base/ETH
-    if (!owned || !titleName || /^nft$/i.test(titleName)){
-      // Only hit chain when needed (slower)
-      const addr = document.getElementById('address').value.trim().toLowerCase();
-      const ocOwned = await detectOwnership(t.chainId, t.contract, tid, addr);
-      if (ocOwned) owned = true;
-
-      // Try on-chain metadata (tokenURI/uri)
-      const ocMeta = await fetchMetadataOnChain(t.chainId, t.contract, tid);
-      if (ocMeta){
-        if (!img && ocMeta.img) img = ocMeta.img;
-        if (ocMeta.name){
-          // Use collection-like title if name contains a # already; else keep generic contract name from Covalent later
-          titleName = ocMeta.name.replace(/\s*#\d+$/,""); // strip trailing #num if present
-        }
-      }
-
-      // If still no collection title, try Covalent single metadata as last resort
-      if (!img || /^nft$/i.test(titleName) || !titleName){
-        const co = await fetchSingleMetadata(t.chainId, t.contract, tid);
-        if (co){
-          if (!img && co.img) img = co.img;
-          if (!titleName || /^nft$/i.test(titleName)) titleName = co.collection || "NFT";
-        }
+    if(!img){
+      const meta = await fetchOnchainMetadata(t.chainId, t.contract, tid);
+      if(meta){
+        img = meta.img || img;
+        if(meta.name) titleName = meta.name;
       }
     }
 
@@ -309,7 +342,7 @@ async function renderTargets({targets, ownedMap, gridEl}){
     info.className = "meta";
     info.innerHTML = `
       <div style="font-weight:700;font-size:15px;margin-bottom:4px">
-        ${titleName || "NFT"} — #${displayId}
+        ${titleName || 'NFT'} — #${displayId}
       </div>
       <div class="${owned?'ok':'no'}">${owned?'You have':'Missing'}</div>
     `;
@@ -317,12 +350,11 @@ async function renderTargets({targets, ownedMap, gridEl}){
     card.appendChild(thumbs);
     card.appendChild(info);
     return card;
-  }));
-
+  })));
   for(const c of cards) gridEl.appendChild(c);
 }
 
-/* flow */
+/*** FLOW ***/
 async function checkAll(){
   const addr = document.getElementById('address').value.trim();
   const status = document.getElementById('status');
@@ -353,49 +385,32 @@ async function checkAll(){
 
   status.textContent = "Loading…";
 
+  let mapEth = null;
+
+  // ETH: önce Covalent (varsa), olmazsa tamamen RPC
   try{
-    const wantsEth  = nodeTargets.length>0;
-    const wantsBase = (alphaTargets.length+betaTargets.length+gammaTargets.length+deltaTargets.length)>0;
-
-    const [ethRes, baseRes] = await Promise.allSettled([
-      wantsEth  ? fetchBalances(1, addr)     : Promise.resolve(null),
-      wantsBase ? fetchBalances(8453, addr)  : Promise.resolve(null)
-    ]);
-
-    if(wantsEth && ethRes.status==="fulfilled"){
-      const mapEth = buildOwnedTokenMap(ethRes.value);
-      await renderTargets({targets: nodeTargets, ownedMap: mapEth, gridEl: gridNodeEth});
-    } else if (wantsEth){
-      const empty = {};
-      await renderTargets({targets: nodeTargets, ownedMap: empty, gridEl: gridNodeEth}); // on-chain fallback will kick in
-      statusNodeEth.textContent = "Ethereum API issue — using on-chain fallback.";
+    if (COVALENT_KEY && nodeTargets.length){
+      const ethRes = await schedule(()=>fetchBalances(1, addr));
+      mapEth = buildOwnedTokenMap(ethRes);
     }
+  }catch(e){
+    statusNodeEth.textContent = "Using on-chain fallback for Ethereum.";
+  }
 
-    if(wantsBase){
-      if (baseRes.status==="fulfilled"){
-        const mapBase = buildOwnedTokenMap(baseRes.value);
-        await renderTargets({targets: alphaTargets, ownedMap: mapBase, gridEl: gridAlphaBase});
-        await renderTargets({targets: betaTargets,  ownedMap: mapBase, gridEl: gridBetaBase});
-        await renderTargets({targets: gammaTargets, ownedMap: mapBase, gridEl: gridGammaBase});
-        await renderTargets({targets: deltaTargets, ownedMap: mapBase, gridEl: gridDeltaBase});
-        if (baseRes.value?._error){
-          statusAlphaBase.textContent = `Base API returned ${baseRes.value._error.status}. Using on-chain fallback where needed.`;
-        }
-      } else {
-        // complete Covalent failure → on-chain fallback only
-        const empty = {};
-        await renderTargets({targets: alphaTargets, ownedMap: empty, gridEl: gridAlphaBase});
-        await renderTargets({targets: betaTargets,  ownedMap: empty, gridEl: gridBetaBase});
-        await renderTargets({targets: gammaTargets, ownedMap: empty, gridEl: gridGammaBase});
-        await renderTargets({targets: deltaTargets, ownedMap: empty, gridEl: gridDeltaBase});
-        statusAlphaBase.textContent = "Base API error — using on-chain fallback.";
-      }
-    }
+  // BASE: Covalent tamamen bypass — direkt RPC
+  statusAlphaBase.textContent = "Using on-chain fallback for Base.";
 
+  try{
+    if(nodeTargets.length)  await renderTargets({targets: nodeTargets,  ownedMap: mapEth||{},  gridEl: gridNodeEth,  address: addr});
+    if(alphaTargets.length) await renderTargets({targets: alphaTargets, ownedMap: {},       gridEl: gridAlphaBase, address: addr});
+    if(betaTargets.length)  await renderTargets({targets: betaTargets,  ownedMap: {},       gridEl: gridBetaBase,  address: addr});
+    if(gammaTargets.length) await renderTargets({targets: gammaTargets, ownedMap: {},       gridEl: gridGammaBase, address: addr});
+    if(deltaTargets.length) await renderTargets({targets: deltaTargets, ownedMap: {},       gridEl: gridDeltaBase, address: addr});
     status.textContent = "";
   }catch(e){
     console.error(e);
     status.innerHTML = `<span class="no">Error: ${e.message}</span>`;
+    document.getElementById('status-alpha-base').textContent = `Base RPC error: ${e.message}`;
   }
 }
 
