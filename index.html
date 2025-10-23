@@ -69,10 +69,10 @@
 
 <script>
 /*** CONFIG ***/
-// ETH için (opsiyonel) Covalent; Base tamamen RPC ile çalışacak
-const COVALENT_KEY = ""; // istersen ekle; boş bırakılırsa ETH de RPC fallback ile devam eder
+// ETH tarafında Covalent opsiyonel; Base tamamen on-chain RPC
+const COVALENT_KEY = ""; // istersen doldur; boşsa ETH de RPC fallback ile idare eder
 
-// CORS dostu, round-robin RPC listeleri + timeout’lu çağrı
+// CORS uyumlu RPC’ler — Promise.any ile ilk çalışan endpoint kullanılır
 const RPCS = {
   1: [
     'https://rpc.ankr.com/eth',
@@ -83,7 +83,7 @@ const RPCS = {
     'https://base.blockpi.network/v1/rpc/public',
     'https://1rpc.io/base',
     'https://base.drpc.org'
-    // İstersen en öne ekle: 'https://base-mainnet.g.alchemy.com/v2/YOUR_KEY'
+    // İstersen: 'https://base-mainnet.g.alchemy.com/v2/YOUR_KEY' en başa
   ]
 };
 
@@ -116,8 +116,12 @@ const TARGETS = [
   { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"3" },
   { group:"gamma", chainId:8453, contract:"0x6f0df43e2849775e98350bc56ffa13e93b284a66", tokenId:"4" },
 
-  // Delta — Base (ERC-1155) — (eğer yoksa boş kalır; geleceğe hazır)
-  // { group:"delta", chainId:8453, contract:"0x...", tokenId:"0" },
+  // Delta — Base (ERC-1155)
+  { group:"delta", chainId:8453, contract:"0x27b43b897ff89a1c9999e317304e756133beb105", tokenId:"0" },
+  { group:"delta", chainId:8453, contract:"0x27b43b897ff89a1c9999e317304e756133beb105", tokenId:"1" },
+  { group:"delta", chainId:8453, contract:"0x27b43b897ff89a1c9999e317304e756133beb105", tokenId:"2" },
+  { group:"delta", chainId:8453, contract:"0x27b43b897ff89a1c9999e317304e756133beb105", tokenId:"3" },
+  { group:"delta", chainId:8453, contract:"0x27b43b897ff89a1c9999e317304e756133beb105", tokenId:"5" },
 ];
 
 /*** HELPERS ***/
@@ -131,20 +135,19 @@ const tidyId = (x)=>{
   const n = Number(String(x).replace(/^0+/, "")); // "0003"->3
   return Number.isFinite(n) ? String(n) : String(x);
 };
-const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
 
-/*** CONCURRENCY ***/
-const MAX_CONCURRENCY = 4;
+/*** CONCURRENCY (biraz arttırıldı) ***/
+const MAX_CONCURRENCY = 6;
 let active = 0, queue = [];
 function schedule(fn){ return new Promise((res,rej)=>{ queue.push({fn,res,rej}); runQueue(); });}
 function runQueue(){
   while(active<MAX_CONCURRENCY && queue.length){
     const {fn,res,rej} = queue.shift(); active++;
-    fn().then(res,rej).finally(()=>{ active--; setTimeout(runQueue,200); });
+    fn().then(res,rej).finally(()=>{ active--; setTimeout(runQueue,160); });
   }
 }
 
-/*** OPTIONAL: COVALENT (sadece ETH tarafında kullanacağız) ***/
+/*** OPTIONAL: COVALENT (yalnız ETH’te) ***/
 async function covalentFetch(url){
   if(!COVALENT_KEY) throw new Error('No Covalent key');
   let r = await fetch(url, { headers: { Authorization: `Bearer ${COVALENT_KEY}` }, cache:'no-store' });
@@ -176,38 +179,25 @@ function buildOwnedTokenMap(data){
 }
 
 /*** FETCH WITH TIMEOUT ***/
-async function fetchWithTimeout(url, opts={}, ms=3500) {
+async function fetchWithTimeout(url, opts={}, ms=2500) {
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), ms);
   try { return await fetch(url, { ...opts, signal: ctrl.signal }); }
   finally { clearTimeout(t); }
 }
 
-/*** ETH CALL (timeout + round-robin) ***/
+/*** ETH CALL — hızlı: endpointleri paralel dener (Promise.any) ***/
 async function ethCall(chainId, to, data){
-  const endpoints = RPCS[chainId] || [];
-  let lastErr;
-  for (const url of endpoints){
-    try{
-      const r = await fetchWithTimeout(url, {
-        method:'POST',
-        headers:{ 'Content-Type':'application/json', 'Accept':'application/json' },
-        body: JSON.stringify({
-          jsonrpc:'2.0', id: Date.now(),
-          method:'eth_call', params:[{ to, data }, 'latest']
-        })
-      }, 3500);
-      if (!r.ok) { lastErr = new Error(`HTTP ${r.status}`); continue; }
-      const j = await r.json();
-      if (j.error) { lastErr = new Error(j.error.message); continue; }
-      if (!j.result) { lastErr = new Error('Empty result'); continue; }
-      return j.result;
-    }catch(e){
-      lastErr = e; // sıradaki endpoint’e geç
-      continue;
-    }
-  }
-  throw lastErr || new Error('No RPC endpoint available');
+  const eps = RPCS[chainId] || [];
+  if(!eps.length) throw new Error('No RPC endpoints');
+  const body = JSON.stringify({ jsonrpc:'2.0', id: Date.now(), method:'eth_call', params:[{ to, data }, 'latest'] });
+  const opts = { method:'POST', headers:{ 'Content-Type':'application/json', 'Accept':'application/json' }, body };
+  const attempts = eps.map(url => fetchWithTimeout(url, opts, 2500)
+    .then(r => { if(!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+    .then(j => { if(j.error || !j.result) throw new Error(j?.error?.message || 'Empty result'); return j.result; })
+  );
+  // İlk başarılı yanıtı döndür
+  return Promise.any(attempts);
 }
 
 /*** SELECTORS + ABI HELPERS ***/
@@ -250,7 +240,7 @@ function normalizeMeta(meta){
   return { img, name, collection: "" };
 }
 
-/*** OWNERSHIP + METADATA (on-chain) ***/
+/*** OWNERSHIP + METADATA ***/
 async function checkOwnedOnchain({chainId, contract, address, tokenId}){
   const id = BigInt(tokenId);
   // ERC1155 balanceOf(address,uint256)
@@ -269,7 +259,7 @@ async function checkOwnedOnchain({chainId, contract, address, tokenId}){
   return false;
 }
 async function fetchOnchainMetadata(chainId, contract, tokenId){
-  // ERC721 tokenURI
+  // Önce ERC721 tokenURI, sonra ERC1155 uri
   try{
     const data = SEL.tokenURI + encU256(tokenId).slice(2);
     const res = await ethCall(chainId, contract, data);
@@ -279,7 +269,6 @@ async function fetchOnchainMetadata(chainId, contract, tokenId){
       if(meta) return normalizeMeta(meta);
     }
   }catch(_){}
-  // ERC1155 uri(uint256)
   try{
     const data = SEL.uri1155 + encU256(tokenId).slice(2);
     const res = await ethCall(chainId, contract, data);
@@ -301,27 +290,29 @@ async function renderTargets({targets, ownedMap, gridEl, address}){
     const tid = tidyId(t.tokenId);
     const displayId = (Number(tid) + 1);
 
-    // 1) ETH için Covalent verisi; Base için ownedMap zaten boş bırakılacak
+    // 1) ETH için Covalent verisi; Base'te genelde boş
     let owned = !!(ownedMap && ownedMap[cLower] && ownedMap[cLower][tid]);
 
-    // 2) Sahiplik yoksa → on-chain fallback (ETH & Base)
+    // 2) Sahiplik yoksa → on-chain (hızlı RPC)
     if(!owned){
       try { owned = await checkOwnedOnchain({ chainId:t.chainId, contract:t.contract, address, tokenId:tid }); }
       catch(_){ owned = false; }
     }
 
-    // Görsel/isim (on-chain metadata fallback dâhil)
+    // Görsel/isim: SADECE owned ise metadata getir (hız için)
     let img = "", titleName = "NFT";
-    if(owned && ownedMap && ownedMap[cLower] && ownedMap[cLower][tid]){
-      const m = ownedMap[cLower][tid];
-      img = m?.img || "";
-      titleName = m?.collection || "NFT";
-    }
-    if(!img){
-      const meta = await fetchOnchainMetadata(t.chainId, t.contract, tid);
-      if(meta){
-        img = meta.img || img;
-        if(meta.name) titleName = meta.name;
+    if(owned){
+      if(ownedMap && ownedMap[cLower] && ownedMap[cLower][tid]){
+        const m = ownedMap[cLower][tid];
+        img = m?.img || "";
+        titleName = m?.collection || "NFT";
+      }
+      if(!img){
+        const meta = await fetchOnchainMetadata(t.chainId, t.contract, tid);
+        if(meta){
+          img = meta.img || img;
+          if(meta.name) titleName = meta.name;
+        }
       }
     }
 
@@ -344,7 +335,7 @@ async function renderTargets({targets, ownedMap, gridEl, address}){
       <div style="font-weight:700;font-size:15px;margin-bottom:4px">
         ${titleName || 'NFT'} — #${displayId}
       </div>
-      <div class="${owned?'ok':'no'}">${owned?'You have':'Missing'}</div>
+        <div class="${owned?'ok':'no'}">${owned?'You have':'Missing'}</div>
     `;
 
     card.appendChild(thumbs);
@@ -387,7 +378,7 @@ async function checkAll(){
 
   let mapEth = null;
 
-  // ETH: önce Covalent (varsa), olmazsa tamamen RPC
+  // ETH: Covalent varsa dene; olmazsa RPC ile sahiplik/metada on-chain
   try{
     if (COVALENT_KEY && nodeTargets.length){
       const ethRes = await schedule(()=>fetchBalances(1, addr));
@@ -397,7 +388,7 @@ async function checkAll(){
     statusNodeEth.textContent = "Using on-chain fallback for Ethereum.";
   }
 
-  // BASE: Covalent tamamen bypass — direkt RPC
+  // BASE: her zaman on-chain
   statusAlphaBase.textContent = "Using on-chain fallback for Base.";
 
   try{
