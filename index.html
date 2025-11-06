@@ -81,7 +81,7 @@
 
 <script>
 /*** CONFIG ***/
-const COVALENT_KEY = ""; // ETH tarafında opsiyonel
+const COVALENT_KEY = ""; // opsiyonel, kullanmasan da olur
 
 const RPCS = {
   1: [
@@ -170,7 +170,7 @@ function runQueue(){
   }
 }
 
-/*** ETH AGG (opsiyonel) ***/
+/*** OPTIONAL: COVALENT (ETH toplu sahiplik/metadata için, şart değil) ***/
 async function covalentFetch(url){
   if(!COVALENT_KEY) throw new Error('No Covalent key');
   let r = await fetch(url, { headers: { Authorization: `Bearer ${COVALENT_KEY}` }, cache:'no-store' });
@@ -266,14 +266,6 @@ const META_CACHE = new Map(); // `${chainId}:${contract}:${tokenId}`
 const BAL_CACHE  = new Map(); // `${chainId}:${contract}:${address}:${tokenId}` -> BigInt
 
 /*** OWNERSHIP + BALANCE ***/
-async function checkOwnedOnchain721({chainId, contract, address, tokenId}){
-  try{
-    const data = SEL.ownerOf + encU256(tokenId).slice(2);
-    const out = await ethCall(chainId, contract, data);
-    const owner = '0x' + out.slice(-40);
-    return owner.toLowerCase() === address.toLowerCase();
-  }catch{ return false; }
-}
 async function get1155Balance({chainId, contract, address, tokenId}){
   const key = `${chainId}:${contract.toLowerCase()}:${address.toLowerCase()}:${tokenId}`;
   if (BAL_CACHE.has(key)) return BAL_CACHE.get(key);
@@ -287,6 +279,14 @@ async function get1155Balance({chainId, contract, address, tokenId}){
     BAL_CACHE.set(key, 0n);
     return 0n;
   }
+}
+async function checkOwnerOf({chainId, contract, address, tokenId}){
+  try{
+    const data = SEL.ownerOf + encU256(tokenId).slice(2);
+    const out = await ethCall(chainId, contract, data);
+    const owner = '0x' + out.slice(-40);
+    return owner.toLowerCase() === address.toLowerCase();
+  }catch{ return false; }
 }
 
 /*** METADATA ***/
@@ -331,26 +331,18 @@ async function renderTargets({targets, ownedMap, gridEl, address}){
     const displayId = (Number(tid) + 1);
     const isBase = t.chainId === 8453;
 
+    // sahiplik
+    const bal = await get1155Balance({ chainId:t.chainId, contract:t.contract, address, tokenId:tid });
+    const owned721 = bal > 0n ? false : await checkOwnerOf({ chainId:t.chainId, contract:t.contract, address, tokenId:tid });
+    const owned = (bal > 0n) || owned721;
+
+    // label
+    const ownedLabel = isBase
+      ? (owned ? `Owned: ${bal.toString()}` : 'Missing')
+      : (owned ? 'You have' : 'Missing');
+
+    // metadata
     let img = "", titleName = "NFT";
-    let ownedLabel = "";
-    let owned = false;
-
-    if(isBase){
-      // ERC-1155: miktarı hesapla
-      const bal = await get1155Balance({ chainId:t.chainId, contract:t.contract, address, tokenId:tid });
-      owned = bal > 0n;
-      ownedLabel = owned ? `Owned: ${bal.toString()}` : 'Missing';
-    }else{
-      // ETH: sadece sahiplik
-      // Covalent map ile ya da ownerOf ile
-      owned = !!(ownedMap && ownedMap[cLower] && ownedMap[cLower][tid]);
-      if(!owned){
-        owned = await checkOwnedOnchain721({ chainId:t.chainId, contract:t.contract, address, tokenId:tid });
-      }
-      ownedLabel = owned ? 'You have' : 'Missing';
-    }
-
-    // Metadata: her durumda dene
     if(owned && ownedMap && ownedMap[cLower] && ownedMap[cLower][tid]){
       const m = ownedMap[cLower][tid];
       img = m?.img || "";
@@ -430,8 +422,8 @@ async function checkAll(){
 
   status.textContent = "Loading…";
 
+  // ETH tarafında Covalent opsiyonel, ama sahiplik on-chain zaten kontrol ediliyor
   let mapEth = null;
-
   try{
     if (COVALENT_KEY && nodeTargets.length){
       const ethRes = await schedule(()=>fetchBalances(1, addr));
@@ -441,6 +433,7 @@ async function checkAll(){
     statusNodeEth.textContent = "Using on-chain fallback for Ethereum.";
   }
 
+  // Base her zaman on-chain
   statusAlphaBase.textContent = "Using on-chain fallback for Base.";
 
   try{
