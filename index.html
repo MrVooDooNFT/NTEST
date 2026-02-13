@@ -171,12 +171,24 @@ const TARGETS = [
 ];
 
 /*** HELPERS ***/
-const toHttpFromIpfs = (url)=>{
+function toHttpFromIpfs(url){
   if(!url) return "";
-  if(url.startsWith("ipfs://")) return `https://ipfs.io/ipfs/${url.slice(7)}`;
-  if(/^\/?ipfs\//i.test(url))   return "https://ipfs.io/" + url.replace(/^\/?/,"");
+
+  // ipfs://ipfs/<cid>/... formatını düzelt
+  if(url.startsWith("ipfs://")){
+    let p = url.slice(7); // remove "ipfs://"
+    if(p.startsWith("ipfs/")) p = p.slice(5); // remove "ipfs/"
+    return `https://ipfs.io/ipfs/${p}`;
+  }
+
+  // /ipfs/<cid>/... veya ipfs/<cid>/...
+  if(/^\/?ipfs\//i.test(url)){
+    return "https://ipfs.io/" + url.replace(/^\/?/,"");
+  }
+
   return url;
-};
+}
+
 const tidyId = (x)=>{
   const n = Number(String(x).replace(/^0+/, ""));
   return Number.isFinite(n) ? String(n) : String(x);
@@ -193,7 +205,7 @@ function runQueue(){
   }
 }
 
-/*** OPTIONAL: COVALENT ***/
+/*** OPTIONAL: COVALENT (ETH toplu sahiplik/metadata için, şart değil) ***/
 async function covalentFetch(url){
   if(!COVALENT_KEY) throw new Error('No Covalent key');
   let r = await fetch(url, { headers: { Authorization: `Bearer ${COVALENT_KEY}` }, cache:'no-store' });
